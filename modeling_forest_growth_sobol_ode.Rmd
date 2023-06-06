@@ -1,0 +1,428 @@
+---
+title: 'Assignment 6: Using Sobol with an ODE'
+author: "Colleen McCamy"
+date: "2023-05-22"
+output: 
+  pdf_document:
+    highlight: zenburn
+    latex_engine: xelatex
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(deSolve)
+library(sensitivity)
+library(ggplot2)
+library(hrbrthemes)
+
+path <- "/Users/colleenmccamy/Documents/MEDS/classes/spring/eds-230-modeling/assignments/"
+
+```
+
+## Establishing the Carbon Model
+
+```{r}
+
+# loading the function
+source("calculate_forest_growth.R")
+
+calculate_forest_growth
+
+```
+
+
+## Running the Model without Sobel
+
+```{r}
+
+# storing parameters
+time <- seq(1, 300, 1)
+C_initial <- 10
+
+# storing params as a dataframe
+params <- list(k = 250,
+                 r = 0.01, 
+                 g = 2,
+                 thresh = 50)
+
+# running the model
+results <- ode(y = C_initial,
+              times = time,
+              func = calculate_forest_growth,
+              parms = params)
+
+# storing as dataframe
+results_df <- as.data.frame(results) |> 
+  rename("forest_growth" = 2)
+
+```
+
+## Graphing the Results
+
+```{r}
+
+# creating an area chart
+results_df |> 
+  ggplot(aes(x = time, y =  forest_growth)) +
+  geom_area(fill = "#386641", 
+            alpha = 0.7) +
+  geom_line(color = "#386641") +
+  theme_minimal() +
+  labs(title = "Forest Growth Over Time",
+       y = "Forest Size (kg/C)",
+       x = "Years")
+
+```
+
+## Running Model with Sobol Sensitivity Analysis
+
+### Initiating parameters
+```{r}
+
+# setting sobel inputs
+num_params <- 1500
+sd_percent <- 0.10
+
+### ----------------
+### parameter values
+### ----------------
+
+### first parameter set
+
+# carrying capacity
+k <- rnorm(mean = params$k,
+           sd = (params$k * sd_percent),
+           n = num_params)
+
+# exponential growth rate (before canopy closure)
+r <- rnorm(mean = params$r,
+           sd = (params$r * sd_percent), 
+           n = num_params)
+
+# linear growth rate (after canopy closure)
+g <- rnorm(mean = params$g,
+           sd = (params$g * sd_percent),
+           n = num_params)
+
+# canopy closure threshold
+thresh <- rnorm(mean = params$thresh,
+           sd = (params$thresh * sd_percent),
+           n = num_params)
+
+# putting all params into one dataframe
+sample1 = cbind.data.frame(k = k,
+                      r = r,
+                      g = g,
+                      thresh = thresh)
+
+### second parameter set
+
+# carrying capacity
+k <- rnorm(mean = params$k,
+           sd = (params$k * sd_percent),
+           n = num_params)
+
+# exponential growth rate (before canopy closure)
+r <- rnorm(mean = params$r,
+           sd = (params$r * sd_percent), 
+           n = num_params)
+
+# linear growth rate (after canopy closure)
+g <- rnorm(mean = params$g,
+           sd = (params$g * sd_percent),
+           n = num_params)
+
+# canopy closure threshold
+thresh <- rnorm(mean = params$thresh,
+           sd = (params$thresh * sd_percent),
+           n = num_params)
+
+# putting all params into one dataframe
+sample2 = cbind.data.frame(k = k,
+                      r = r,
+                      g = g,
+                      thresh = thresh)
+
+```
+
+
+
+```{r}
+
+# changing any negative values to zero in both samples
+sample1 <- sample1 |>  
+  map_df(pmax, 0.0)
+
+sample2 <- sample2 |> 
+  map_df(pmax, 0.0)
+
+
+```
+
+### Creating sobol parameter object
+
+```{r}
+
+# creating our sobel obejct and get sets of parameters for running the model
+sens_params <- sobolSalt(model = NULL,
+                         sample1,
+                         sample2,
+                         nboot = 350)
+
+# adding column names
+colnames(sens_params$X) <- c("k", "r", "g", "thresh")
+
+# turning into dataframe for sensitivity analysis iteration
+sens_params_df <- as.data.frame(sens_params$X)
+
+# looking at just one parameter set
+# sens_params$X[1,]
+
+```
+
+### Conducting sensitivity analysis
+
+```{r}
+
+# loading in the wrapper function
+source("conduct_forest_sensitivity.R")
+
+# running the analysis
+results_sens <- sens_params_df |> 
+  pmap(conduct_forest_sensitivity, 
+       C_initial = C_initial,
+       time = time,
+       func = calculate_forest_growth)
+
+# binding rows and turning results into a dataframe
+results_sens <- do.call(rbind, results_sens) 
+results_sens <- as.data.frame(results_sens)
+
+# renaming and adding parameter values
+results_sens <- results_sens |> 
+  rename("max_growth" = 1) |> 
+  cbind(sens_params_df)
+
+
+```
+
+## Sensitivity Analysis - Indices & Plot
+
+### Graphing the sensivitity results
+
+```{r}
+
+# creating a boxplot
+results_sens |> 
+  ggplot(aes(max_growth)) +
+  geom_boxplot(fill = "#386641",
+               alpha = 0.7,
+               color = "#386641") +
+  theme_minimal() +
+  labs(x = "Maximum Forest Size From Sensitivity Analysis (kg/C)")
+
+
+```
+
+### Reporting sobel indices 
+
+```{r}
+# getting analysis
+max_growth <- tell(sens_params,
+                   results_sens$max_growth) 
+
+# adding row names to first order
+rownames(max_growth$S) <- c("k", "r", "g", "thresh")
+
+print("First Order Indices")
+max_growth$S
+
+```
+
+```{r}
+
+# adding row names to second order
+rownames(max_growth$T) <- c("k", "r", "g", "thresh")
+
+print("Second Order Indices")
+max_growth$T
+
+```
+
+
+## Discussion
+Looking at the first order index, it appears that both carrying capacity and the exponential growth rate is most sensitive to the output of the model with a relatively small confidence interval that does not include 0. This could mean that the output from rate at which forest grow when below the threshold canopy closure is most sensitive to change and in the context of climate change, with more severe storms and heavy rain instances contrasted with extreme drought, this model will could not accurately portray forest growth and there could be a decrease in growth rate. Also, depending on the conditions, warming temperature could lead to more extreme growing rates when less than the threshold canopy. This rapid growth could have negative implications for understory flora and biodiversity.
+
+
+## Extra Credit Assignment
+
+```{r}
+
+
+# loading in the wrapper function
+source("conduct_forest_sensitivity.R")
+
+# running the analysis
+results_sens <- sens_params_df |> 
+  pmap(conduct_forest_sensitivity, 
+       C_initial = C_initial,
+       time = time,
+       func = calculate_forest_growth)
+
+# binding rows and turning results into a dataframe
+results_sens <- do.call(rbind, results_sens) 
+results_sens <- as.data.frame(results_sens)
+
+# renaming and adding parameter values
+results_sens <- results_sens |> 
+  rename("max_growth" = 1) |> 
+  cbind(sens_params_df)
+
+
+```
+
+
+```{r}
+
+
+# setting sobel inputs
+num_params <- 1500
+sd_percent <- 0.10
+
+### ----------------
+### parameter values
+### ----------------
+
+### first parameter set
+
+# carrying capacity
+k <- rnorm(mean = params$k,
+           sd = (params$k * sd_percent),
+           n = num_params)
+hr <- 0.10 # setting a harvest rate
+
+# harvest rate
+hr <- rnorm(mean = hr,
+           sd = (hr * sd_percent),
+           n = num_params)
+
+# exponential growth rate (before canopy closure)
+r <- rnorm(mean = params$r,
+           sd = (params$r * sd_percent), 
+           n = num_params)
+
+# linear growth rate (after canopy closure)
+g <- rnorm(mean = params$g,
+           sd = (params$g * sd_percent),
+           n = num_params)
+
+# canopy closure threshold
+thresh <- rnorm(mean = params$thresh,
+           sd = (params$thresh * sd_percent),
+           n = num_params)
+
+# putting all params into one dataframe
+sample1 = cbind.data.frame(k = k,
+                      r = r,
+                      g = g,
+                      thresh = thresh)
+
+### second parameter set
+
+# carrying capacity
+k <- rnorm(mean = params$k,
+           sd = (params$k * sd_percent),
+           n = num_params)
+
+# exponential growth rate (before canopy closure)
+r <- rnorm(mean = params$r,
+           sd = (params$r * sd_percent), 
+           n = num_params)
+
+# linear growth rate (after canopy closure)
+g <- rnorm(mean = params$g,
+           sd = (params$g * sd_percent),
+           n = num_params)
+
+# harvest rate
+hr <- rnorm(mean = hr,
+           sd = (hr * sd_percent),
+           n = num_params)
+
+
+# canopy closure threshold
+thresh <- rnorm(mean = params$thresh,
+           sd = (params$thresh * sd_percent),
+           n = num_params)
+
+# putting all params into one dataframe
+sample2 = cbind.data.frame(k = k,
+                      r = r,
+                      g = g,
+                      thresh = thresh)
+
+```
+
+
+
+```{r}
+
+# changing any negative values to zero in both samples
+sample1 <- sample1 |>  
+  map_df(pmax, 0.0)
+
+sample2 <- sample2 |> 
+  map_df(pmax, 0.0)
+
+
+```
+
+### Creating sobol parameter object
+
+```{r}
+
+# creating our sobel obejct and get sets of parameters for running the model
+sens_params <- sobolSalt(model = NULL,
+                         sample1,
+                         sample2,
+                         nboot = 350)
+
+# adding column names
+colnames(sens_params$X) <- c("k", "r", "g", "thresh", "hr")
+
+# turning into dataframe for sensitivity analysis iteration
+sens_params_df <- as.data.frame(sens_params$X)
+
+# looking at just one parameter set
+# sens_params$X[1,]
+
+```
+
+### Conducting sensitivity analysis
+
+```{r}
+
+# loading in the wrapper function
+source("conduct_forest_sensitivity.R")
+
+# running the analysis
+results_sens <- sens_params_df |> 
+  pmap(conduct_forest_sensitivity, 
+       C_initial = C_initial,
+       time = time,
+       func = calculate_forest_growth)
+
+# binding rows and turning results into a dataframe
+results_sens <- do.call(rbind, results_sens) 
+results_sens <- as.data.frame(results_sens)
+
+# renaming and adding parameter values
+results_sens <- results_sens |> 
+  rename("max_growth" = 1) |> 
+  cbind(sens_params_df)
+
+
+```
+

@@ -1,0 +1,204 @@
+---
+title: "Assignment 5"
+author: "Erica Bishop, Colleen McCamy"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r libraries}
+library(sensitivity)
+library(tidyverse)
+library(lubridate)
+library(reldist)
+library(purrr)
+library(ggpubr)
+```
+```{r data}
+
+#model output data
+msage <- read.table("../Data/sagerm.txt", header=T)
+
+#initial observed data
+sager <- read.table("../Data/sager.txt", header=T)
+
+```
+
+
+```{r source function}
+#our combined metric calculation function
+source("../R/combined_metric.R")
+
+```
+
+```{r data wrangle}
+
+#rename columns in df to number of times to run iterations
+nsim <- ncol(msage)
+snames <- sprintf("S%d", seq(from = 1, to = nsim))
+colnames(msage) <- snames
+
+#add dates to observed
+sager <- sager %>% 
+  mutate(date = paste(day,month,year, sep="/"))
+
+sager$date = as.Date(sager$date,"%d/%m/%Y")
+
+#add date columns from previous data
+msage$date <- sager$date
+msage$month <- sager$month
+msage$year <- sager$year
+msage$day <- sager$day
+msage$wy <- sager$wy
+
+
+#join our observations to model predictions by date
+msage <- left_join(msage, sager[,c("obs","date")], by = "date") %>% 
+  na.omit()
+
+
+```
+
+Our calibraton period is May of 1974 - so those are the default dates in the function. However you can input other times. 
+```{r run function for 1974}
+
+#remove uneccesary columns from df
+mod <- msage %>% 
+  select(-date, -day, -wy, -obs, -year, -month)
+
+#1974 is default in function but can be changed 
+results <- mod %>% 
+  map_df(ecm,
+         obs = msage$obs,
+         year = msage$year,
+         month = msage$month)
+
+```
+
+```{r best metric}
+
+worst_metric <- results[which.max(results)]
+#S10 was our worst metric!!
+
+best_metric <- results[which.min(results)]
+#S29 was our best metric!!
+
+
+```
+
+
+```{r summary plot}
+#plot metrics from models
+results_longer <- results %>% pivot_longer(everything(), names_to = c("model")) %>% 
+  rename(ecm = value)
+
+#summary of performance
+
+summaryPlot <- ggplot(
+  data = results_longer
+) +
+  geom_histogram(aes(
+    x = ecm,
+    fill = "#EF476F"
+  )) +
+  labs(title = "Distribution of ECM scores over models for May 1974",
+       subtitle = "The ecm assesses a model's SSE multiplied by the difference in ranges for the month of May") +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(hjust = 0.5)
+  )
+
+summaryPlot
+
+
+```
+
+```{r uncertainty ranges}
+
+#show best and worst model performances and the uncertainty 
+msage_best_worst <- msage %>% 
+  select("S29", "S10") %>% 
+  mutate(difference = S10-S29) %>%
+  pivot_longer(everything(),
+               names_to = "model") %>% 
+  rename(ecm = value)
+
+
+ggplot(
+  data = msage_best_worst,
+  aes(x = model,
+      y = ecm,
+      color = model)
+) +
+  geom_boxplot() +
+  labs(
+    title = "ECM scores from the best and worst models and the difference between them",
+    caption = "There is less variation in ECM scores for our best-performing model (S29)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.caption = element_text(hjust = 0.5),
+    plot.title = element_text(hjust = 0.5)
+  )
+
+
+
+```
+
+```{r best model}
+
+#plot the range of May stream flows for the best model and the observed data
+
+compare_df <- msage %>% 
+  select("month",
+         "year",
+         "obs",
+         "S10",
+         "S29") %>% 
+  filter(month == 5) %>% 
+  group_by(year) %>% 
+  summarise(S10 = max(S10) - min(S10),
+            S29 = max(S29) - min(S29),
+            observed = max(obs) - min(obs)) %>% 
+  pivot_longer(cols = c(S10, S29, observed),
+               names_to = "model") %>% 
+  rename(may_flow_range = value)
+
+ggplot(
+  data = compare_df,
+  aes(x = year,
+      y = may_flow_range,
+      col = model)
+) +
+  geom_line() +
+  labs(
+    title = "Post-calibration model assessment",
+    x = "Year",
+    y = "May streamflow range",
+    subtitle = "Best (S29) and worst (S10) performing models compared to observed streamflows"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+
+
+
+
+```
+
+
+##Discussion 
+
+The ECM (Erica-Colleen Metric) score assess a model's accuracy overall by computing the normalized sum of squared errors (1 - SSE) as well as its accuracy specific to computing streamflows during the high-variability month of May. The ECM computes the difference in the modeled v. observed range in streamflows over the entire month of May, and multiplies that by the normalized SSE. The ECM is given as the square root of the absolute value of that product so it is always a positive value - the smaller the ECM the better the model performance in this case. 
+
+We were specifically interested in honing in on the stream flow models for the month of may because there can be a very wide range of streamflows during the Spring between high and low precipitation years. As you can see in the plot above, after calibrating our model with the year 1974, we were able to much more accurately predict the range of streamflows for the month of may across the years available in our data. The graph above also shows our worst-performing model (S10) to visualize the improvement that calibration makes with model selection. 
+
+
+
